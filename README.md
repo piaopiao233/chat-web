@@ -1,5 +1,61 @@
-# Vue 3 + TypeScript + Vite
+# Chat Web
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+基于 Vue 3 + TDesign 的 AI 聊天应用前端。
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+> 后端项目：[open-spring-ai-ollama](https://gitee.com/jusenlin/open-spring-ai-ollama)
+
+## 演示
+
+![会话列表](src/assets/view1.png)
+
+![聊天界面](src/assets/view2.png)
+
+## 功能特性
+
+- AI 对话：支持流式输出，实时显示 AI 回复
+- 思考过程：展示 AI 的思考过程
+- 会话管理：创建、切换、重命名、删除会话
+- 历史消息：加载和查看历史聊天记录
+- 响应式布局：适配不同屏幕尺寸
+
+## 技术栈
+
+- Vue 3 + TypeScript
+- TDesign Vue Next
+- Vite
+
+## 快速开始
+
+### 安装依赖
+
+```bash
+pnpm install
+```
+
+### 开发运行
+
+```bash
+pnpm dev
+```
+
+### 构建打包
+
+```bash
+pnpm build
+```
+
+## 项目结构
+
+```
+src/
+├── api/          # API 接口
+├── assets/       # 静态资源
+├── components/   # 组件
+├── config/       # 配置
+├── App.vue       # 根组件
+└── main.ts       # 入口文件
+```
+
+## 许可证
+
+MIT

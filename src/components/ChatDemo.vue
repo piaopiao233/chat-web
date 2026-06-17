@@ -190,14 +190,25 @@ const chatServiceConfig: ChatServiceConfig = {
   /**
    * 请求发送前的配置
    */
-  onRequest: (params: ChatRequestParams) => ({
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message: params.prompt,
-      sessionId: currentSessionId.value || undefined
-    })
-  }),
+  onRequest: (params: ChatRequestParams) => {
+    // 发送消息时隐藏欢迎页
+    if (!chatMessages.value.length) {
+      chatMessages.value = [{
+        id: 'temp-user',
+        role: 'user',
+        content: [{ type: 'text', data: params.prompt }]
+      }]
+    }
+
+    return {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: params.prompt,
+        sessionId: currentSessionId.value || undefined
+      })
+    }
+  },
 
   /**
    * 解析后端返回的SSE数据
