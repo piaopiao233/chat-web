@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import HelloWorld from './components/HelloWorld.vue'
+import ChatDemo from './components/ChatDemo.vue'
 </script>
 
 <template>
-  <HelloWorld />
+  <ChatDemo />
 </template>

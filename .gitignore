@@ -39,3 +39,5 @@ CLAUDE.md
 .claude
 logs
 node_modules
+.opencode
+.pnpm-store
