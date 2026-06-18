@@ -38,7 +38,7 @@
 
     <t-layout class="chat-main">
       <!-- 欢迎页面（无消息时显示） -->
-      <div v-if="!displayMessages.length" class="welcome-panel">
+      <div v-if="!messages.length" class="welcome-panel">
         <div class="welcome-badge">AI</div>
         <div class="welcome-title">
           <robot-filled-icon class="welcome-logo" />
@@ -55,7 +55,7 @@
           default-scroll-to="bottom"
         >
           <div
-            v-for="message in displayMessages"
+            v-for="message in messages"
             :key="message.id"
             class="chat-message-group"
             :class="{ 'chat-message-group--user': message.role === 'user' }"
@@ -153,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import { AddCircleIcon, MoreIcon, RobotFilledIcon, ToolsIcon } from 'tdesign-icons-vue-next'
 import {
@@ -300,16 +300,7 @@ const { chatEngine, messages, status } = useChat({
   chatServiceConfig
 })
 
-const displayMessages = ref<ChatMessagesData[]>([])
 const isChatLoading = computed(() => status.value === 'pending' || status.value === 'streaming')
-
-watch(
-  messages,
-  (nextMessages) => {
-    displayMessages.value = [...nextMessages]
-  },
-  { deep: true }
-)
 
 /**
  * 组件挂载时初始化
@@ -385,7 +376,6 @@ async function loadMessages(sessionId: string) {
  * @param nextMessages 聊天消息列表
  */
 async function setChatMessages(nextMessages: ChatMessagesData[]) {
-  displayMessages.value = [...nextMessages]
   chatEngine.value?.setMessages(nextMessages, 'replace')
   await nextTick()
   chatListRef.value?.scrollToBottom?.({ behavior: 'auto' })
