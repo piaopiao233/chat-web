@@ -38,7 +38,7 @@
 
     <t-layout class="chat-main">
       <!-- 欢迎页面（无消息时显示） -->
-      <div v-if="!messages.length" class="welcome-panel">
+      <div v-if="!displayMessages.length" class="welcome-panel">
         <div class="welcome-badge">AI</div>
         <div class="welcome-title">
           <robot-filled-icon class="welcome-logo" />
@@ -55,7 +55,7 @@
           default-scroll-to="bottom"
         >
           <div
-            v-for="message in messages"
+            v-for="message in displayMessages"
             :key="message.id"
             class="chat-message-group"
             :class="{ 'chat-message-group--user': message.role === 'user' }"
@@ -67,20 +67,25 @@
               :avatar="getMessageAvatar(message)"
               :name="getMessageName(message)"
               :datetime="message.datetime"
-            />
-
-            <div v-if="getMessageToolCalls(message).length" class="tool-call-trigger-row">
-              <t-button
-                class="tool-call-trigger"
-                size="small"
-                variant="outline"
-                shape="round"
-                @click="openToolCallDrawer(getMessageToolCalls(message))"
-              >
-                <template #icon><tools-icon /></template>
-                {{ formatToolSummary(getMessageToolCalls(message)) }}
-              </t-button>
-            </div>
+            >
+              <template v-if="getMessageToolCalls(message).length" #content>
+                <div class="assistant-message-content">
+                  <t-chat-markdown :content="getMessageMarkdown(message)" />
+                  <div class="tool-call-trigger-row">
+                    <t-button
+                      class="tool-call-trigger"
+                      size="small"
+                      variant="outline"
+                      shape="round"
+                      @click="openToolCallDrawer(getMessageToolCalls(message))"
+                    >
+                      <template #icon><tools-icon /></template>
+                      {{ formatToolSummary(getMessageToolCalls(message)) }}
+                    </t-button>
+                  </div>
+                </div>
+              </template>
+            </t-chat-message>
           </div>
         </t-chat-list>
 
@@ -113,7 +118,7 @@
       v-model:visible="toolDrawerVisible"
       header="工具调用"
       placement="right"
-      size="440px"
+      size="min(440px, 92vw)"
       :footer="false"
     >
       <div v-if="selectedToolCalls.length" class="tool-drawer-list">
@@ -148,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import { AddCircleIcon, MoreIcon, RobotFilledIcon, ToolsIcon } from 'tdesign-icons-vue-next'
 import {
@@ -295,7 +300,16 @@ const { chatEngine, messages, status } = useChat({
   chatServiceConfig
 })
 
+const displayMessages = ref<ChatMessagesData[]>([])
 const isChatLoading = computed(() => status.value === 'pending' || status.value === 'streaming')
+
+watch(
+  messages,
+  (nextMessages) => {
+    displayMessages.value = [...nextMessages]
+  },
+  { deep: true }
+)
 
 /**
  * 组件挂载时初始化
@@ -371,6 +385,7 @@ async function loadMessages(sessionId: string) {
  * @param nextMessages 聊天消息列表
  */
 async function setChatMessages(nextMessages: ChatMessagesData[]) {
+  displayMessages.value = [...nextMessages]
   chatEngine.value?.setMessages(nextMessages, 'replace')
   await nextTick()
   chatListRef.value?.scrollToBottom?.({ behavior: 'auto' })
@@ -502,6 +517,16 @@ function isAssistantToolCallRecord(message: ChatMessage) {
 function getMessageToolCalls(message: ChatMessagesData): DisplayToolCall[] {
   const ext = message.ext as ToolCallMessageExt | undefined
   return ext?.toolCalls || []
+}
+
+/**
+ * 获取消息中的Markdown文本
+ * @param message 聊天消息
+ * @returns Markdown文本
+ */
+function getMessageMarkdown(message: ChatMessagesData) {
+  const content = message.content?.find(item => item.type === 'markdown' || item.type === 'text')
+  return typeof content?.data === 'string' ? content.data : ''
 }
 
 /**
@@ -824,19 +849,33 @@ function confirmDeleteSession(session: ChatSession) {
   align-items: stretch;
 }
 
+.assistant-message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assistant-message-content :deep(.t-chat__markdown) {
+  margin-bottom: 0;
+}
+
+.assistant-message-content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
 .tool-call-trigger-row {
   display: flex;
   align-items: center;
-  margin: -2px 0 14px;
-  padding-left: 52px;
+  margin: 0;
+  padding-left: 0;
 }
 
 .tool-call-trigger {
-  height: 30px;
+  height: 28px;
   color: #334155;
   background: #fff;
   border-color: #e2e8f0;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
 }
 
 .chat-sender-panel {
@@ -935,5 +974,75 @@ function confirmDeleteSession(session: ChatSession) {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
+}
+
+@media (max-width: 760px) {
+  .chat-page {
+    flex-direction: column;
+  }
+
+  .session-sidebar {
+    width: 100% !important;
+    height: 104px;
+    flex: 0 0 104px !important;
+    border-right: 0;
+    border-bottom: 1px solid #e7eaf0;
+  }
+
+  .sidebar-header {
+    padding: 10px 12px 8px;
+  }
+
+  .new-chat-btn {
+    height: 36px;
+  }
+
+  .session-list {
+    display: flex;
+    gap: 8px;
+    padding: 0 10px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .session-item {
+    flex: 0 0 172px;
+    min-height: 36px;
+  }
+
+  .session-more {
+    opacity: 1;
+  }
+
+  .empty-session {
+    display: none;
+  }
+
+  .chat-main {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+
+  .chat-list :deep(.t-chat__list) {
+    padding: 16px 12px;
+  }
+
+  .chat-message-group {
+    margin-bottom: 10px;
+  }
+
+  .chat-sender-panel {
+    padding: 10px 12px 12px;
+  }
+
+  .welcome-panel {
+    top: 42%;
+    width: calc(100% - 24px);
+  }
+
+  .welcome-title {
+    font-size: 20px;
+    line-height: 28px;
+  }
 }
 </style>
