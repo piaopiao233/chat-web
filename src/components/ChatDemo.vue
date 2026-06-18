@@ -174,6 +174,7 @@ import type { ChatMessage, ChatSession, CustomChatResponse, ToolCallMeta } from 
 
 type ChatListInstance = {
   scrollToBottom?: (options?: { behavior?: 'auto' | 'smooth' }) => void
+  $el?: HTMLElement
 }
 
 type DisplayToolCall = {
@@ -194,6 +195,8 @@ const MESSAGE_TYPE = {
   ASSISTANT: 2,
   TOOL: 3
 } as const
+
+const HISTORY_RELOAD_DELAYS = [100, 500, 1000, 1500] as const
 
 /**
  * 会话操作菜单选项
@@ -282,7 +285,7 @@ const chatServiceConfig: ChatServiceConfig = {
    */
   onComplete: async (isAborted) => {
     if (!isAborted && currentSessionId.value) {
-      await loadMessages(currentSessionId.value)
+      await loadMessagesWhenReady(currentSessionId.value, messages.value.length)
       await refreshSessions()
     }
   },
@@ -351,8 +354,11 @@ async function handleSend(value: string) {
     return
   }
 
-  await chatEngine.value?.sendUserMessage({ prompt })
+  const sendTask = chatEngine.value?.sendUserMessage({ prompt })
   inputValue.value = ''
+  await nextTick()
+  scrollChatToBottom('smooth')
+  await sendTask
 }
 
 /**
@@ -372,13 +378,60 @@ async function loadMessages(sessionId: string) {
 }
 
 /**
+ * 等待后端历史消息落库后再刷新列表
+ * @param sessionId 业务会话ID
+ * @param minVisibleCount 当前页面至少应保留的可见消息数量
+ */
+async function loadMessagesWhenReady(sessionId: string, minVisibleCount: number) {
+  for (const delayMs of HISTORY_RELOAD_DELAYS) {
+    if (delayMs > 0) {
+      await sleep(delayMs)
+    }
+    const historyMessages = await getMessages(sessionId)
+    const nextMessages = toChatMessages(historyMessages)
+    // 后端落库存在短暂延迟时，不用旧历史覆盖当前流式结果。
+    if (nextMessages.length >= minVisibleCount) {
+      await setChatMessages(nextMessages)
+      return
+    }
+  }
+}
+
+/**
+ * 延迟指定毫秒数
+ * @param delayMs 延迟时间
+ */
+function sleep(delayMs: number) {
+  return new Promise(resolve => window.setTimeout(resolve, delayMs))
+}
+
+/**
  * 设置聊天组件消息
  * @param nextMessages 聊天消息列表
  */
 async function setChatMessages(nextMessages: ChatMessagesData[]) {
   chatEngine.value?.setMessages(nextMessages, 'replace')
   await nextTick()
-  chatListRef.value?.scrollToBottom?.({ behavior: 'auto' })
+  scrollChatToBottom('auto')
+}
+
+/**
+ * 滚动聊天列表到底部
+ * @param behavior 滚动动画类型
+ */
+function scrollChatToBottom(behavior: 'auto' | 'smooth') {
+  if (chatListRef.value?.scrollToBottom) {
+    chatListRef.value.scrollToBottom({ behavior })
+    return
+  }
+
+  const chatListElement = chatListRef.value?.$el
+  const scrollElement = chatListElement?.querySelector<HTMLElement>('.t-chat__list') || chatListElement
+
+  scrollElement?.scrollTo({
+    top: scrollElement.scrollHeight,
+    behavior
+  })
 }
 
 /**
