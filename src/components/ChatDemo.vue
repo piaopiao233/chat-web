@@ -38,7 +38,7 @@
 
     <t-layout class="chat-main">
       <!-- 欢迎页面（无消息时显示） -->
-      <div v-if="!chatMessages.length" class="welcome-panel">
+      <div v-if="!messages.length" class="welcome-panel">
         <div class="welcome-badge">AI</div>
         <div class="welcome-title">
           <robot-filled-icon class="welcome-logo" />
@@ -46,16 +46,56 @@
         </div>
       </div>
 
-      <!-- Chatbot组件（自带发送框） -->
-      <t-chatbot
-        ref="chatRef"
-        class="chatbot"
-        :chat-service-config="chatServiceConfig"
-        :default-messages="chatMessages"
-        :sender-props="senderProps"
-        :list-props="listProps"
-        :message-props="messageProps"
-      />
+      <div class="chat-surface">
+        <t-chat-list
+          ref="chatListRef"
+          class="chat-list"
+          :clear-history="false"
+          :auto-scroll="true"
+          default-scroll-to="bottom"
+        >
+          <div
+            v-for="message in messages"
+            :key="message.id"
+            class="chat-message-group"
+            :class="{ 'chat-message-group--user': message.role === 'user' }"
+          >
+            <t-chat-message
+              :message="message"
+              :placement="getMessagePlacement(message)"
+              :variant="getMessageVariant(message)"
+              :avatar="getMessageAvatar(message)"
+              :name="getMessageName(message)"
+              :datetime="message.datetime"
+            />
+
+            <div v-if="getMessageToolCalls(message).length" class="tool-call-trigger-row">
+              <t-button
+                class="tool-call-trigger"
+                size="small"
+                variant="outline"
+                shape="round"
+                @click="openToolCallDrawer(getMessageToolCalls(message))"
+              >
+                <template #icon><tools-icon /></template>
+                {{ formatToolSummary(getMessageToolCalls(message)) }}
+              </t-button>
+            </div>
+          </div>
+        </t-chat-list>
+
+        <div class="chat-sender-panel">
+          <t-chat-sender
+            v-model="inputValue"
+            class="chat-sender"
+            placeholder="给 AI 发送消息"
+            :textarea-props="{ autosize: { minRows: 2, maxRows: 6 } }"
+            :loading="isChatLoading"
+            @send="handleSend"
+            @stop="handleStop"
+          />
+        </div>
+      </div>
     </t-layout>
 
     <t-dialog
@@ -68,20 +108,55 @@
     >
       <t-input v-model="renameTitle" clearable placeholder="请输入会话标题" />
     </t-dialog>
+
+    <t-drawer
+      v-model:visible="toolDrawerVisible"
+      header="工具调用"
+      placement="right"
+      size="440px"
+      :footer="false"
+    >
+      <div v-if="selectedToolCalls.length" class="tool-drawer-list">
+        <t-collapse :default-value="[0]" expand-icon-placement="right">
+          <t-collapse-panel
+            v-for="(tool, index) in selectedToolCalls"
+            :key="tool.id || `${tool.name}-${index}`"
+            :value="index"
+          >
+            <template #header>
+              <div class="tool-panel-header">
+                <tools-icon />
+                <span>{{ tool.name || '未知工具' }}</span>
+                <t-tag v-if="tool.type" size="small" variant="light">{{ tool.type }}</t-tag>
+              </div>
+            </template>
+
+            <div class="tool-detail-block">
+              <div class="tool-detail-label">参数</div>
+              <pre class="tool-detail-code">{{ formatToolValue(tool.arguments) }}</pre>
+            </div>
+            <div class="tool-detail-block">
+              <div class="tool-detail-label">结果</div>
+              <pre class="tool-detail-code">{{ formatToolValue(tool.result) }}</pre>
+            </div>
+          </t-collapse-panel>
+        </t-collapse>
+      </div>
+      <t-empty v-else description="暂无工具调用" />
+    </t-drawer>
   </t-layout>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
-import { AddCircleIcon, MoreIcon, RobotFilledIcon } from 'tdesign-icons-vue-next'
-import type {
-  AIMessageContent,
-  ChatMessagesData,
-  ChatRequestParams,
-  ChatServiceConfig,
-  SSEChunkData,
-  TdChatMessageConfigItem
+import { AddCircleIcon, MoreIcon, RobotFilledIcon, ToolsIcon } from 'tdesign-icons-vue-next'
+import {
+  type AIMessageContent,
+  type ChatMessagesData,
+  type ChatServiceConfig,
+  type SSEChunkData,
+  useChat
 } from '@tdesign-vue-next/chat'
 import { API_BASE_URL } from '../config'
 import {
@@ -90,16 +165,30 @@ import {
   getSessions,
   updateSessionTitle
 } from '../api/chat'
-import type { ChatMessage, ChatSession, CustomChatResponse } from '../api/chat'
+import type { ChatMessage, ChatSession, CustomChatResponse, ToolCallMeta } from '../api/chat'
 
-/**
- * Chatbot实例类型
- */
-type ChatbotInstance = {
-  setMessages?: (messages: ChatMessagesData[], mode?: 'replace' | 'prepend' | 'append') => void
-  sendUserMessage?: (params: ChatRequestParams) => Promise<void>
-  scrollList?: (options?: { behavior?: 'auto' | 'smooth'; to?: 'top' | 'bottom' }) => void
+type ChatListInstance = {
+  scrollToBottom?: (options?: { behavior?: 'auto' | 'smooth' }) => void
 }
+
+type DisplayToolCall = {
+  id: string
+  type: string | null
+  name: string
+  arguments: string | null
+  result: string | null
+}
+
+type ToolCallMessageExt = {
+  toolCalls?: DisplayToolCall[]
+}
+
+const MESSAGE_TYPE = {
+  SYSTEM: 0,
+  USER: 1,
+  ASSISTANT: 2,
+  TOOL: 3
+} as const
 
 /**
  * 会话操作菜单选项
@@ -113,10 +202,10 @@ const sessionActions = [
 const sessions = ref<ChatSession[]>([])
 // 当前会话ID
 const currentSessionId = ref('')
-// 聊天消息
-const chatMessages = ref<ChatMessagesData[]>([])
-// Chatbot组件引用
-const chatRef = ref<ChatbotInstance>()
+// 输入框内容
+const inputValue = ref('')
+// ChatList组件引用
+const chatListRef = ref<ChatListInstance>()
 // 重命名相关
 const renameVisible = ref(false)
 const renameLoading = ref(false)
@@ -124,61 +213,9 @@ const renameTitle = ref('')
 const renameSession = ref<ChatSession>()
 // 删除中的会话ID
 const deletingSessionId = ref<number>()
-
-/**
- * 发送者属性
- */
-const senderProps = {
-  placeholder: '给 AI 发送消息',
-  textareaProps: {
-    autosize: { minRows: 2, maxRows: 6 }
-  }
-}
-
-/**
- * 列表属性
- */
-const listProps = {
-  autoScroll: true,
-  defaultScrollTo: 'bottom' as const
-}
-
-/**
- * 消息属性配置 - 自定义头像、操作栏等
- * @param msg 消息数据
- * @returns 消息配置
- */
-const messageProps = (msg: ChatMessagesData): TdChatMessageConfigItem => {
-  const { role, datetime } = msg
-  // 用户消息配置
-  if (role === 'user') {
-    return {
-      variant: 'base',
-      placement: 'right',
-      avatar: 'https://tdesign.gtimg.com/site/avatar.jpg',
-      name: '我',
-      datetime
-    }
-  }
-
-  // AI消息配置
-  if (role === 'assistant') {
-    return {
-      placement: 'left',
-      avatar: 'https://tdesign.gtimg.com/site/chat-avatar.png',
-      name: 'AI',
-      datetime,
-      actions: ['copy']
-    }
-  }
-
-  // 系统消息配置
-  return {
-    avatar: 'https://tdesign.gtimg.com/site/chat-avatar.png',
-    name: '系统',
-    datetime
-  }
-}
+// 工具调用抽屉
+const toolDrawerVisible = ref(false)
+const selectedToolCalls = ref<DisplayToolCall[]>([])
 
 /**
  * 聊天服务配置
@@ -190,16 +227,7 @@ const chatServiceConfig: ChatServiceConfig = {
   /**
    * 请求发送前的配置
    */
-  onRequest: (params: ChatRequestParams) => {
-    // 发送消息时隐藏欢迎页
-    if (!chatMessages.value.length) {
-      chatMessages.value = [{
-        id: 'temp-user',
-        role: 'user',
-        content: [{ type: 'text', data: params.prompt }]
-      }]
-    }
-
+  onRequest: (params) => {
     return {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -262,6 +290,13 @@ const chatServiceConfig: ChatServiceConfig = {
   }
 }
 
+const { chatEngine, messages, status } = useChat({
+  defaultMessages: [],
+  chatServiceConfig
+})
+
+const isChatLoading = computed(() => status.value === 'pending' || status.value === 'streaming')
+
 /**
  * 组件挂载时初始化
  */
@@ -282,6 +317,8 @@ async function refreshSessions() {
  */
 function handleCreateSession() {
   currentSessionId.value = ''
+  inputValue.value = ''
+  closeToolCallDrawer()
   setChatMessages([])
 }
 
@@ -294,7 +331,30 @@ async function handleSwitchSession(session: ChatSession) {
     return
   }
   currentSessionId.value = session.sessionId
+  inputValue.value = ''
+  closeToolCallDrawer()
   await loadMessages(session.sessionId)
+}
+
+/**
+ * 发送消息
+ * @param value 输入内容
+ */
+async function handleSend(value: string) {
+  const prompt = value.trim()
+  if (!prompt) {
+    return
+  }
+
+  await chatEngine.value?.sendUserMessage({ prompt })
+  inputValue.value = ''
+}
+
+/**
+ * 停止生成
+ */
+function handleStop() {
+  chatEngine.value?.abortChat()
 }
 
 /**
@@ -302,59 +362,240 @@ async function handleSwitchSession(session: ChatSession) {
  * @param sessionId 业务会话ID
  */
 async function loadMessages(sessionId: string) {
-  const messages = await getMessages(sessionId)
-  setChatMessages(toChatMessages(messages))
+  const historyMessages = await getMessages(sessionId)
+  await setChatMessages(toChatMessages(historyMessages))
 }
 
 /**
  * 设置聊天组件消息
- * @param messages 聊天消息列表
+ * @param nextMessages 聊天消息列表
  */
-async function setChatMessages(messages: ChatMessagesData[]) {
-  chatMessages.value = messages
+async function setChatMessages(nextMessages: ChatMessagesData[]) {
+  chatEngine.value?.setMessages(nextMessages, 'replace')
   await nextTick()
-  chatRef.value?.setMessages?.(messages, 'replace')
-  chatRef.value?.scrollList?.({ to: 'bottom', behavior: 'auto' })
+  chatListRef.value?.scrollToBottom?.({ behavior: 'auto' })
 }
 
 /**
  * 将后端消息转换为TDesign Chat消息
- * @param messages 后端消息列表
+ * @param backendMessages 后端消息列表
  * @returns 聊天组件消息列表
  */
-function toChatMessages(messages: ChatMessage[]): ChatMessagesData[] {
-  return messages
-    .filter(message => message.type !== 3)
-    .map(message => {
-      const id = String(message.id)
-      const datetime = message.createTime
+function toChatMessages(backendMessages: ChatMessage[]): ChatMessagesData[] {
+  const recordToolCalls = collectRecordToolCalls(backendMessages)
+  const chatMessageList: ChatMessagesData[] = []
 
-      if (message.type === 1) {
-        return {
-          id,
-          role: 'user' as const,
-          datetime,
-          content: [{ type: 'text' as const, data: message.content }]
-        }
-      }
+  for (const message of backendMessages) {
+    if (message.type === MESSAGE_TYPE.TOOL || isAssistantToolCallRecord(message)) {
+      continue
+    }
 
-      if (message.type === 0) {
-        return {
-          id,
-          role: 'system' as const,
-          datetime,
-          content: [{ type: 'text' as const, data: message.content }]
-        }
-      }
+    const id = String(message.id)
+    const datetime = message.createTime
 
-      return {
+    if (message.type === MESSAGE_TYPE.USER) {
+      chatMessageList.push({
         id,
-        role: 'assistant' as const,
+        role: 'user',
         datetime,
-        status: 'complete' as const,
-        content: [{ type: 'markdown' as const, data: message.content }]
+        content: [{ type: 'text', data: message.content || '' }]
+      })
+      continue
+    }
+
+    if (message.type === MESSAGE_TYPE.SYSTEM) {
+      chatMessageList.push({
+        id,
+        role: 'system',
+        datetime,
+        content: [{ type: 'text', data: message.content || '' }]
+      })
+      continue
+    }
+
+    if (message.type === MESSAGE_TYPE.ASSISTANT) {
+      const content = message.content || ''
+      if (!content.trim()) {
+        continue
       }
+
+      const toolCalls = recordToolCalls.get(message.recordId) || []
+      chatMessageList.push({
+        id,
+        role: 'assistant',
+        datetime,
+        status: 'complete',
+        content: [{ type: 'markdown', data: content }],
+        ext: toolCalls.length ? { toolCalls } : undefined
+      })
+    }
+  }
+
+  return chatMessageList
+}
+
+/**
+ * 收集每轮对话中的工具调用信息
+ * @param backendMessages 后端消息列表
+ * @returns 按recordId归集后的工具调用
+ */
+function collectRecordToolCalls(backendMessages: ChatMessage[]) {
+  const recordToolCallMap = new Map<string, Map<string, DisplayToolCall>>()
+
+  for (const message of backendMessages) {
+    const toolCalls = getBackendToolCalls(message)
+    if (!toolCalls.length) {
+      continue
+    }
+
+    if (!recordToolCallMap.has(message.recordId)) {
+      recordToolCallMap.set(message.recordId, new Map())
+    }
+
+    const currentRecordTools = recordToolCallMap.get(message.recordId)!
+    toolCalls.forEach((toolCall, index) => {
+      const toolKey = toolCall.id || `${toolCall.name || 'tool'}-${index}`
+      const existsTool = currentRecordTools.get(toolKey)
+
+      // 同一个工具调用会分别保存“请求”和“结果”，这里按id合并为一条展示记录。
+      currentRecordTools.set(toolKey, {
+        id: toolCall.id || existsTool?.id || toolKey,
+        type: toolCall.type ?? existsTool?.type ?? null,
+        name: toolCall.name || existsTool?.name || '未知工具',
+        arguments: toolCall.arguments ?? existsTool?.arguments ?? null,
+        result: toolCall.result ?? existsTool?.result ?? null
+      })
     })
+  }
+
+  return new Map(
+    Array.from(recordToolCallMap.entries()).map(([recordId, toolMap]) => [
+      recordId,
+      Array.from(toolMap.values())
+    ])
+  )
+}
+
+/**
+ * 获取后端消息中的工具调用列表
+ * @param message 后端消息
+ * @returns 工具调用列表
+ */
+function getBackendToolCalls(message: ChatMessage): ToolCallMeta[] {
+  return message.metaJson?.toolCalls?.filter(Boolean) || []
+}
+
+/**
+ * 判断是否为AI发起工具调用的中间消息
+ * @param message 后端消息
+ * @returns 是否为工具调用中间消息
+ */
+function isAssistantToolCallRecord(message: ChatMessage) {
+  return message.type === MESSAGE_TYPE.ASSISTANT && getBackendToolCalls(message).length > 0
+}
+
+/**
+ * 获取聊天消息中的工具调用列表
+ * @param message 聊天消息
+ * @returns 工具调用列表
+ */
+function getMessageToolCalls(message: ChatMessagesData): DisplayToolCall[] {
+  const ext = message.ext as ToolCallMessageExt | undefined
+  return ext?.toolCalls || []
+}
+
+/**
+ * 打开工具调用抽屉
+ * @param toolCalls 工具调用列表
+ */
+function openToolCallDrawer(toolCalls: DisplayToolCall[]) {
+  selectedToolCalls.value = toolCalls
+  toolDrawerVisible.value = true
+}
+
+/**
+ * 关闭工具调用抽屉
+ */
+function closeToolCallDrawer() {
+  selectedToolCalls.value = []
+  toolDrawerVisible.value = false
+}
+
+/**
+ * 格式化工具调用摘要
+ * @param toolCalls 工具调用列表
+ * @returns 摘要文本
+ */
+function formatToolSummary(toolCalls: DisplayToolCall[]) {
+  return `调用 ${toolCalls.length} 个工具`
+}
+
+/**
+ * 格式化工具参数或结果
+ * @param value 参数或结果
+ * @returns 展示文本
+ */
+function formatToolValue(value: unknown) {
+  if (value === null || value === undefined || value === '') {
+    return '暂无'
+  }
+
+  if (typeof value !== 'string') {
+    return JSON.stringify(value, null, 2)
+  }
+
+  const text = value.trim()
+  if (!text) {
+    return '暂无'
+  }
+
+  try {
+    const parsed = JSON.parse(text)
+    return typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)
+  } catch {
+    return text
+  }
+}
+
+/**
+ * 获取消息气泡方向
+ * @param message 聊天消息
+ * @returns 气泡方向
+ */
+function getMessagePlacement(message: ChatMessagesData) {
+  return message.role === 'user' ? 'right' : 'left'
+}
+
+/**
+ * 获取消息气泡样式
+ * @param message 聊天消息
+ * @returns 气泡样式
+ */
+function getMessageVariant(message: ChatMessagesData) {
+  return message.role === 'user' ? 'base' : 'text'
+}
+
+/**
+ * 获取消息头像
+ * @param message 聊天消息
+ * @returns 头像地址
+ */
+function getMessageAvatar(message: ChatMessagesData) {
+  return message.role === 'user'
+    ? 'https://tdesign.gtimg.com/site/avatar.jpg'
+    : 'https://tdesign.gtimg.com/site/chat-avatar.png'
+}
+
+/**
+ * 获取消息展示名称
+ * @param message 聊天消息
+ * @returns 展示名称
+ */
+function getMessageName(message: ChatMessagesData) {
+  if (message.role === 'user') {
+    return '我'
+  }
+  return message.role === 'system' ? '系统' : 'AI'
 }
 
 /**
@@ -555,15 +796,59 @@ function confirmDeleteSession(session: ChatSession) {
   background: linear-gradient(180deg, #ffffff 0%, #ffffff 70%, #fafbff 100%);
 }
 
-.chatbot {
+.chat-surface {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  --td-chat-list-padding-bottom: 128px;
+  min-height: 0;
+  background: #fff;
 }
 
-.chatbot :deep(.t-chatbot) {
-  height: 100%;
+.chat-list {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-list :deep(.t-chat__list) {
+  padding: 24px 32px;
+}
+
+.chat-message-group {
+  margin-bottom: 12px;
+}
+
+.chat-message-group--user {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.tool-call-trigger-row {
+  display: flex;
+  align-items: center;
+  margin: -2px 0 14px;
+  padding-left: 52px;
+}
+
+.tool-call-trigger {
+  height: 30px;
+  color: #334155;
   background: #fff;
+  border-color: #e2e8f0;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.chat-sender-panel {
+  flex: 0 0 auto;
+  padding: 12px 32px 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), #fff 38%);
+  border-top: 1px solid #eef1f6;
+}
+
+.chat-sender {
+  max-width: 960px;
+  margin: 0 auto;
 }
 
 .welcome-panel {
@@ -607,5 +892,48 @@ function confirmDeleteSession(session: ChatSession) {
 .welcome-logo {
   color: #366ef4;
   font-size: 30px;
+}
+
+.tool-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-panel-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #111827;
+  font-weight: 600;
+}
+
+.tool-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tool-detail-label {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tool-detail-code {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
 }
 </style>

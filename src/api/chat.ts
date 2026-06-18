@@ -13,7 +13,7 @@ export interface CustomChatResponse {
   /** 对话ID */
   recordId: string
   /** token数量 */
-  tokenCount: number
+  tokenCount: number | null
 }
 
 /**
@@ -33,6 +33,32 @@ export interface ChatSession {
 }
 
 /**
+ * 工具调用元数据
+ */
+export interface ToolCallMeta {
+  /** 工具调用ID */
+  id: string | null
+  /** 工具调用类型 */
+  type: string | null
+  /** 工具名称 */
+  name: string | null
+  /** 工具参数JSON */
+  arguments: string | null
+  /** 工具执行结果 */
+  result: string | null
+}
+
+/**
+ * 消息扩展元数据
+ */
+export interface ChatMessageMetaJson {
+  /** 工具调用列表 */
+  toolCalls?: ToolCallMeta[] | null
+  /** 图片信息 */
+  images?: unknown[] | null
+}
+
+/**
  * 聊天消息
  */
 export interface ChatMessage {
@@ -45,7 +71,11 @@ export interface ChatMessage {
   /** 对话ID */
   recordId: string
   /** 消息内容 */
-  content: string
+  content: string | null
+  /** 消息扩展元数据 */
+  metaJson: ChatMessageMetaJson | null
+  /** token数量 */
+  tokenCount: number | null
   /** 创建时间 */
   createTime: string
 }
