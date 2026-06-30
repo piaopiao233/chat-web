@@ -14,6 +14,22 @@ export interface CustomChatResponse {
   recordId: string
   /** token数量 */
   tokenCount: number | null
+  /** 是否开启网络搜索 */
+  enableWebSearch?: boolean
+  /** 流式工具调用提示 */
+  toolCalls?: Array<StreamToolCallMeta | null> | null
+}
+
+/**
+ * 流式工具调用元数据
+ */
+export interface StreamToolCallMeta {
+  /** 工具名称 */
+  toolName: string | null
+  /** 工具参数JSON */
+  toolArguments: string | null
+  /** 工具调用展示文案 */
+  label: string | null
 }
 
 /**
@@ -114,6 +130,17 @@ export async function getSessions(pageNum = 1, pageSize = 20): Promise<PageResul
 export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
   return request.get<unknown, ChatMessage[]>('/ChatMessage/selectBySessionId', {
     params: { sessionId }
+  })
+}
+
+/**
+ * 根据对话ID获取本轮工具调用详情
+ * @param recordId 对话ID
+ * @returns 工具调用详情列表
+ */
+export async function getToolCallsByRecordId(recordId: string): Promise<ToolCallMeta[]> {
+  return request.get<unknown, ToolCallMeta[]>('/ChatMessage/selectToolCallsByRecordId', {
+    params: { recordId }
   })
 }
 
