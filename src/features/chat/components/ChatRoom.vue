@@ -53,6 +53,7 @@
           </t-chat-message>
         </div>
 
+        <!-- 如果当前是重播 不展示工具提示 -->
         <div class="chat-progress-queue">
           <!-- 工具提示只展示一小段时间，下面的“准备回答中”会跟随流式状态持续显示。 -->
           <progress-queue ref="progressQueueRef" loading-text="准备回答中">
@@ -108,9 +109,8 @@ import {
   useChat
 } from '@tdesign-vue-next/chat'
 import ProgressQueue from '../../../components/ProgressQueue.vue'
-import { getMessages, stopChatStream } from '../../../api/chat'
+import {getMessages, isSessionIdHasRunningChat, stopChatStream, chatUrl, retryChatUrl} from '../../../api/chat'
 import type { ChatMessage, CustomChatResponse, StreamToolCallMeta, ToolCallMeta } from '../../../api/chat'
-import { API_BASE_URL } from '../../../config'
 import ToolCallDetailDrawer from './ToolCallDetailDrawer.vue'
 
 const HISTORY_RELOAD_DELAYS = [100, 500, 1000, 1500] as const
@@ -169,10 +169,8 @@ const progressQueueRef = ref<ProgressQueueInstance>()
 const toolDrawerVisible = ref(false)
 // 选中的对话记录id
 const toolRecordId = ref('')
-// 用户消息的 endpoint
-const userMessagesEndpoint =`${API_BASE_URL}/ChatMessage/message`
-//重连消息的 endpoint
-const retryMessagesEndpoint = `${API_BASE_URL}/ChatMessage/reconnect`
+//是否重播
+const isRetry = ref(false);
 
 // tdesign-chat 的 useChat 配置放在这里，右侧聊天室完整掌握发送、SSE 和完成刷新流程。
 const chatServiceConfig: ChatServiceConfig = {
@@ -183,7 +181,11 @@ const chatServiceConfig: ChatServiceConfig = {
   onComplete: chatOnComplete,
   onError: chatOnError
 }
-
+/**
+ * chatEngine 聊天引擎
+ * messages 聊天的上下文所有记录
+ *
+ */
 const { chatEngine, messages, status } = useChat({
   defaultMessages: [],
   chatServiceConfig
@@ -202,12 +204,19 @@ watch(
 
     resetRoomState()
 
-    if (!sessionId) {
+    //如果有会话ID，加载列表
+    if (sessionId) {
+      await loadMessages(sessionId)
+      //判断该会话ID是否正在运行中
+      const isRunning = await isSessionIdHasRunningChat(sessionId)
+      if (isRunning){//进行重播
+        chatServiceConfig.endpoint = retryChatUrl + `?sessionId=${encodeURIComponent(sessionId)}`
+        isRetry.value = true
+        chatEngine.value?.sendAIMessage()
+      }
+    }else {
       await setChatMessages([])
-      return
     }
-
-    await loadMessages(sessionId)
   },
   { immediate: true }
 )
@@ -218,15 +227,21 @@ watch(
  * @param params
  */
 function chatOnRequest (params: ChatRequestParams) {
-  return {
+  console.log('chatOnRequest', params)
+  const requestConfig: RequestInit = {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    headers: { 'Content-Type': 'application/json' }
+  }
+  //配置聊天消息参数
+  if (chatServiceConfig.endpoint === chatUrl){
+    requestConfig.body = JSON.stringify({
       message: params.prompt,
       sessionId: currentSessionId.value || undefined,
       enableWebSearch: enableWebSearch.value
     })
   }
+  return requestConfig;
+
 }
 /**
  * 解析后端返回的SSE数据。
@@ -245,10 +260,11 @@ function chatOnMessage(chunk: SSEChunkData): AIMessageContent | null {
   if (data?.recordId) {
     activeRecordId.value = data.recordId
   }
+  if (!isRetry.value){ //不是重播才展示工具
+    showStreamToolCalls(data?.toolCalls)
+  }
 
-  showStreamToolCalls(data?.toolCalls)
-
-  if (data?.toolCalls?.length || !data?.content) {
+  if (!data?.content) {
     return null
   }
 
@@ -300,9 +316,10 @@ async function handleSend(value: string) {
   if (!prompt) {
     return
   }
-  // 切换到用户消息后端请求url
-  chatServiceConfig.endpoint = userMessagesEndpoint
+  // 聊天消息后端请求url
+  chatServiceConfig.endpoint = chatUrl
   // sendUserMessage 会先把用户消息放入 messages，再请求后端 SSE。
+  isRetry.value = false
   const sendTask = chatEngine.value?.sendUserMessage({ prompt })
   await nextTick()
   scrollChatToBottom('smooth')
@@ -332,7 +349,7 @@ function setChatListRef(instance: ChatListInstance | null) {
 }
 
 /**
- * 清理右侧聊天室临时状态。
+ * 清理聊天室状态。
  */
 function resetRoomState() {
   inputValue.value = ''

@@ -1,4 +1,10 @@
 import request from './request'
+import {API_BASE_URL} from "../config";
+
+// 聊天消息的url
+export const chatUrl =`${API_BASE_URL}/ChatMessage/message`
+//重连消息的 url
+export const retryChatUrl = `${API_BASE_URL}/ChatMessage/message/reconnect`
 
 /**
  * 聊天消息响应
