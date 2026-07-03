@@ -116,7 +116,7 @@ async function handleRenameConfirm() {
   try {
     await updateSessionTitle(renameSession.value.id, title)
     renameVisible.value = false
-    emit('renamed')
+    emit('renamed', renameSession.value)
     MessagePlugin.success('标题已更新')
   } finally {
     renameLoading.value = false

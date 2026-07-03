@@ -145,6 +145,16 @@ export async function getToolCallsByRecordId(recordId: string): Promise<ToolCall
 }
 
 /**
+ * 停止指定对话的流式生成
+ * @param recordId 对话ID
+ */
+export async function stopChatStream(recordId: string): Promise<void> {
+  await request.post<unknown, void>('/ChatMessage/message/stop', null, {
+    params: { recordId }
+  })
+}
+
+/**
  * 修改会话标题
  * @param id 数据库主键
  * @param title 新标题
@@ -160,5 +170,14 @@ export async function updateSessionTitle(id: number, title: string): Promise<voi
 export async function deleteSession(id: number): Promise<void> {
   await request.get<unknown, void>('/ChatSession/delete', {
     params: { id }
+  })
+}
+
+/**
+ * 查询sessionId 有没有正在进行的聊天
+ */
+export async function isSessionIdHasRunningChat(sessionId: string): Promise<boolean> {
+ return await request.get<unknown, boolean>('/ChatMessage/isSessionIdHasRunningChat', {
+    params: { sessionId }
   })
 }

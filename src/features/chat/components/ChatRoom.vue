@@ -104,10 +104,11 @@ import {
   type ChatMessagesData,
   type ChatServiceConfig,
   type SSEChunkData,
+  type ChatRequestParams,
   useChat
 } from '@tdesign-vue-next/chat'
 import ProgressQueue from '../../../components/ProgressQueue.vue'
-import { getMessages } from '../../../api/chat'
+import { getMessages, stopChatStream } from '../../../api/chat'
 import type { ChatMessage, CustomChatResponse, StreamToolCallMeta, ToolCallMeta } from '../../../api/chat'
 import { API_BASE_URL } from '../../../config'
 import ToolCallDetailDrawer from './ToolCallDetailDrawer.vue'
@@ -152,90 +153,35 @@ const emit = defineEmits<{
 
 // 当前会话ID由父组件和路由维护；聊天室只负责根据它加载/清空聊天内容。
 const currentSessionId = defineModel<string>('currentSessionId', { required: true })
-
+//用户输入问题内容
 const inputValue = ref('')
+// 是否开启网络搜索
 const enableWebSearch = ref(false)
+// 是否跳过会话加载
 const skipNextSessionLoad = ref(false)
+// 当前正在流式生成的一轮对话ID
+const activeRecordId = ref('')
+// 聊天列表的引用
 const chatListRef = ref<ChatListInstance>()
+// 工具提示组件
 const progressQueueRef = ref<ProgressQueueInstance>()
+// 工具调用详情抽屉是否展示
 const toolDrawerVisible = ref(false)
+// 选中的对话记录id
 const toolRecordId = ref('')
+// 用户消息的 endpoint
+const userMessagesEndpoint =`${API_BASE_URL}/ChatMessage/message`
+//重连消息的 endpoint
+const retryMessagesEndpoint = `${API_BASE_URL}/ChatMessage/reconnect`
 
 // tdesign-chat 的 useChat 配置放在这里，右侧聊天室完整掌握发送、SSE 和完成刷新流程。
 const chatServiceConfig: ChatServiceConfig = {
-  endpoint: `${API_BASE_URL}/ChatMessage/message`,
+  endpoint: undefined, //请求后端的地址
   stream: true,
-
-  /**
-   * 请求发送前的配置。
-   */
-  onRequest: (params) => {
-    return {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: params.prompt,
-        sessionId: currentSessionId.value || undefined,
-        enableWebSearch: enableWebSearch.value
-      })
-    }
-  },
-
-  /**
-   * 解析后端返回的SSE数据。
-   */
-  onMessage: (chunk: SSEChunkData): AIMessageContent | null => {
-    const data = chunk.data as CustomChatResponse
-
-    if (data?.sessionId && !currentSessionId.value) {
-      // 新会话第一次收到 sessionId 时，只同步路由和侧栏，不用历史消息覆盖当前流式内容。
-      skipNextSessionLoad.value = true
-      currentSessionId.value = data.sessionId
-      emit('session-id-received', data.sessionId)
-      emit('refresh-sessions')
-    }
-
-    showStreamToolCalls(data?.toolCalls)
-
-    if (data?.toolCalls?.length || !data?.content) {
-      return null
-    }
-
-    if (data.isThinking) {
-      return {
-        type: 'thinking',
-        data: { title: '思考中', text: data.content },
-        status: 'streaming',
-        strategy: 'merge'
-      }
-    }
-
-    return {
-      type: 'markdown',
-      data: data.content,
-      strategy: 'merge'
-    }
-  },
-
-  /**
-   * 请求完成回调。
-   */
-  onComplete: (isAborted) => {
-    if (!isAborted && currentSessionId.value) {
-      // 后端保存最终消息可能有一点延迟，所以这里会轮询几次历史消息，避免旧数据覆盖流式结果。
-      loadMessagesWhenReady(currentSessionId.value, messages.value.length)
-        .then(() => emit('refresh-sessions'))
-    }
-    clearStreamToolCalls()
-  },
-
-  /**
-   * 错误处理回调。
-   */
-  onError: () => {
-    clearStreamToolCalls()
-    MessagePlugin.error('消息发送失败')
-  }
+  onRequest: chatOnRequest,
+  onMessage: chatOnMessage,
+  onComplete: chatOnComplete,
+  onError: chatOnError
 }
 
 const { chatEngine, messages, status } = useChat({
@@ -244,6 +190,7 @@ const { chatEngine, messages, status } = useChat({
 })
 const isChatLoading = computed(() => status.value === 'pending' || status.value === 'streaming')
 
+//监听当前会话ID的变更
 watch(
   currentSessionId,
   async (sessionId) => {
@@ -265,6 +212,85 @@ watch(
   { immediate: true }
 )
 
+
+/**
+ * 请求发送前的配置。
+ * @param params
+ */
+function chatOnRequest (params: ChatRequestParams) {
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: params.prompt,
+      sessionId: currentSessionId.value || undefined,
+      enableWebSearch: enableWebSearch.value
+    })
+  }
+}
+/**
+ * 解析后端返回的SSE数据。
+ */
+function chatOnMessage(chunk: SSEChunkData): AIMessageContent | null {
+  const data = chunk.data as CustomChatResponse
+
+  if (data?.sessionId && !currentSessionId.value) {
+    // 新会话第一次收到 sessionId 时，只同步路由和侧栏，不用历史消息覆盖当前流式内容。
+    skipNextSessionLoad.value = true
+    currentSessionId.value = data.sessionId
+    emit('session-id-received', data.sessionId)
+    emit('refresh-sessions')
+  }
+
+  if (data?.recordId) {
+    activeRecordId.value = data.recordId
+  }
+
+  showStreamToolCalls(data?.toolCalls)
+
+  if (data?.toolCalls?.length || !data?.content) {
+    return null
+  }
+
+  if (data.isThinking) {
+    return {
+      type: 'thinking',
+      data: { title: '思考中', text: data.content },
+      status: 'streaming',
+      strategy: 'merge'
+    }
+  }
+
+  return {
+    type: 'markdown',
+    data: data.content,
+    strategy: 'merge'
+  }
+}
+
+/**
+ * 请求完成回调。
+ */
+function chatOnComplete (isAborted: boolean)  {
+  if (!isAborted && currentSessionId.value) {
+    // 后端保存最终消息可能有一点延迟，所以这里会轮询几次历史消息，避免旧数据覆盖流式结果。
+    loadMessagesWhenReady(currentSessionId.value, messages.value.length)
+        .then(() => emit('refresh-sessions'))
+  }
+  activeRecordId.value = ''
+  clearStreamToolCalls()
+}
+
+/**
+ * 错误处理。
+ */
+function chatOnError(){
+  activeRecordId.value = ''
+  clearStreamToolCalls()
+  MessagePlugin.error('消息发送失败')
+}
+
+
 /**
  * 发送消息。
  * @param value 输入内容
@@ -274,7 +300,8 @@ async function handleSend(value: string) {
   if (!prompt) {
     return
   }
-
+  // 切换到用户消息后端请求url
+  chatServiceConfig.endpoint = userMessagesEndpoint
   // sendUserMessage 会先把用户消息放入 messages，再请求后端 SSE。
   const sendTask = chatEngine.value?.sendUserMessage({ prompt })
   await nextTick()
@@ -286,9 +313,14 @@ async function handleSend(value: string) {
 /**
  * 停止生成。
  */
-function stopMessage() {
-  chatEngine.value?.abortChat()
-  clearStreamToolCalls()
+async function stopMessage() {
+  const recordId = activeRecordId.value
+  //前端停止请求
+  await chatEngine.value?.abortChat()
+  if (recordId) {
+    //后端停止生成
+    await stopChatStream(recordId)
+  }
 }
 
 /**
@@ -304,6 +336,7 @@ function setChatListRef(instance: ChatListInstance | null) {
  */
 function resetRoomState() {
   inputValue.value = ''
+  activeRecordId.value = ''
   clearStreamToolCalls()
   closeToolCallDrawer()
 }
