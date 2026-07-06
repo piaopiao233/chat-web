@@ -35,6 +35,13 @@
             <!-- 有工具调用时，自定义 AI 消息内容：正文下方紧贴一个工具入口。 -->
             <template v-if="getMessageToolCalls(message).length" #content>
               <div class="assistant-message-content">
+                <t-chat-thinking
+                  v-if="getMessageThinking(message)"
+                  status="complete"
+                  :collapsed="getThinkingCollapsed(message)"
+                  :content="getMessageThinking(message)"
+                  @collapsed-change="handleThinkingCollapsedChange(message, $event)"
+                />
                 <t-chat-markdown :content="getMessageMarkdown(message)" />
                 <div class="tool-call-trigger-row">
                   <t-button
@@ -136,6 +143,11 @@ type DisplayToolCall = {
   result: string | null
 }
 
+type DisplayThinkingContent = {
+  title?: string
+  text?: string
+}
+
 type ProgressQueueItem = {
   key: string
   label: string
@@ -169,6 +181,8 @@ const progressQueueRef = ref<ProgressQueueInstance>()
 const toolDrawerVisible = ref(false)
 // 选中的对话记录id
 const toolRecordId = ref('')
+// 思考过程折叠状态，默认收起，用户点击后按消息维度记住展开状态。
+const thinkingCollapsedMap = ref<Record<string, boolean>>({})
 //是否重播
 const isRetry = ref(false);
 
@@ -456,7 +470,16 @@ function toChatMessages(backendMessages: ChatMessage[]): ChatMessagesData[] {
 
     if (message.type === MESSAGE_TYPE.ASSISTANT) {
       const content = message.content || ''
-      if (!content.trim()) {
+      const thinking = message.metaJson?.thinking
+      // 构建内容数组
+      const messageContent: AIMessageContent[] = []
+
+      // 1. 如果有思考过程，先添加 thinking 内容块
+      if (thinking) {messageContent.push({type: 'thinking', status: 'complete', data: {title: '思考过程', text: thinking}})}
+      // 2. 如果有正文内容，再添加 markdown 内容块
+      if (content.trim()) {messageContent.push({type: 'markdown', data: content})}
+      // 如果两者都没有，则跳过这条消息
+      if (messageContent.length === 0) {
         continue
       }
 
@@ -466,12 +489,11 @@ function toChatMessages(backendMessages: ChatMessage[]): ChatMessagesData[] {
         role: 'assistant',
         datetime,
         status: 'complete',
-        content: [{ type: 'markdown', data: content }],
+        content: messageContent,
         ext: toolCalls.length ? { toolCalls } : undefined
       })
     }
   }
-
   return chatMessageList
 }
 
@@ -563,6 +585,37 @@ function getMessageToolRecordId(message: ChatMessagesData) {
 function getMessageMarkdown(message: ChatMessagesData) {
   const content = message.content?.find(item => item.type === 'markdown' || item.type === 'text')
   return typeof content?.data === 'string' ? content.data : ''
+}
+
+/**
+ * 获取消息中的思考过程。
+ * @param message 聊天消息
+ * @returns 思考过程内容
+ */
+function getMessageThinking(message: ChatMessagesData): DisplayThinkingContent | undefined {
+  const content = message.content?.find(item => item.type === 'thinking')
+  if (!content?.data || typeof content.data !== 'object') {
+    return undefined
+  }
+  return content.data as DisplayThinkingContent
+}
+
+/**
+ * 获取思考过程是否折叠。
+ * @param message 聊天消息
+ * @returns 是否折叠
+ */
+function getThinkingCollapsed(message: ChatMessagesData) {
+  return thinkingCollapsedMap.value[String(message.id)] ?? true
+}
+
+/**
+ * 记录思考过程折叠状态。
+ * @param message 聊天消息
+ * @param event 折叠状态变更事件
+ */
+function handleThinkingCollapsedChange(message: ChatMessagesData, event: CustomEvent<boolean>) {
+  thinkingCollapsedMap.value[String(message.id)] = event.detail
 }
 
 /**

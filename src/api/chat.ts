@@ -78,6 +78,8 @@ export interface ChatMessageMetaJson {
   toolCalls?: ToolCallMeta[] | null
   /** 图片信息 */
   images?: unknown[] | null
+  /**思考过程 */
+  thinking?: string | null
 }
 
 /**
