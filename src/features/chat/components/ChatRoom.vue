@@ -31,30 +31,20 @@
             :avatar="getMessageAvatar(message)"
             :name="getMessageName(message)"
             :datetime="message.datetime"
+            :chat-content-props="chatContentProps"
           >
-            <!-- 有工具调用时，自定义 AI 消息内容：正文下方紧贴一个工具入口。 -->
-            <template v-if="getMessageToolCalls(message).length" #content>
-              <div class="assistant-message-content">
-                <t-chat-thinking
-                  v-if="getMessageThinking(message)"
-                  status="complete"
-                  :collapsed="getThinkingCollapsed(message)"
-                  :content="getMessageThinking(message)"
-                  @collapsed-change="handleThinkingCollapsedChange(message, $event)"
-                />
-                <t-chat-markdown :content="getMessageMarkdown(message)" />
-                <div class="tool-call-trigger-row">
-                  <t-button
-                    class="tool-call-trigger"
-                    size="small"
-                    variant="outline"
-                    shape="round"
-                    @click="openToolCallDrawer(getMessageToolRecordId(message))"
-                  >
-                    <template #icon><tools-icon /></template>
-                    {{ formatToolSummary(getMessageToolCalls(message)) }}
-                  </t-button>
-                </div>
+            <!-- 工具入口放在操作区，正文继续交给 t-chat-message 默认 Markdown 渲染。 -->
+            <template v-if="getMessageToolCalls(message).length" #actionbar>
+              <div class="tool-call-trigger-row">
+                <t-button
+                  size="small"
+                  variant="outline"
+                  shape="round"
+                  @click="openToolCallDrawer(getMessageToolRecordId(message))"
+                >
+                  <template #icon><tools-icon /></template>
+                  {{ formatToolSummary(getMessageToolCalls(message)) }}
+                </t-button>
               </div>
             </template>
           </t-chat-message>
@@ -83,12 +73,20 @@
           @stop="stopMessage"
         >
           <template #footer-prefix>
-            <div class="web-search-toggle">
-              <t-switch v-model="enableWebSearch" size="small" />
-              <span class="web-search-status" :class="{ active: enableWebSearch }">
-                <internet-icon />
-                {{ enableWebSearch ? '网络搜索已开启' : '网络搜索已关闭' }}
-              </span>
+            <div class="sender-option-list">
+              <div class="sender-option-toggle">
+                <t-switch v-model="enableWebSearch" size="small" />
+                <span class="sender-option-status ">
+                  <internet-icon />
+                  {{ enableWebSearch ? '网络搜索已开启' : '网络搜索已关闭' }}
+                </span>
+              </div>
+              <div class="sender-option-toggle">
+                <t-switch v-model="enableThinking" size="small" />
+                <span class="sender-option-status">
+                  <robot-filled-icon />深度思考
+                </span>
+              </div>
             </div>
           </template>
         </t-chat-sender>
@@ -143,11 +141,6 @@ type DisplayToolCall = {
   result: string | null
 }
 
-type DisplayThinkingContent = {
-  title?: string
-  text?: string
-}
-
 type ProgressQueueItem = {
   key: string
   label: string
@@ -169,6 +162,8 @@ const currentSessionId = defineModel<string>('currentSessionId', { required: tru
 const inputValue = ref('')
 // 是否开启网络搜索
 const enableWebSearch = ref(false)
+// 是否开启深度思考
+const enableThinking = ref(true)
 // 是否跳过会话加载
 const skipNextSessionLoad = ref(false)
 // 当前正在流式生成的一轮对话ID
@@ -181,10 +176,14 @@ const progressQueueRef = ref<ProgressQueueInstance>()
 const toolDrawerVisible = ref(false)
 // 选中的对话记录id
 const toolRecordId = ref('')
-// 思考过程折叠状态，默认收起，用户点击后按消息维度记住展开状态。
-const thinkingCollapsedMap = ref<Record<string, boolean>>({})
 //是否重播
 const isRetry = ref(false);
+// 聊天内容渲染配置，历史消息里的思考过程默认收起。
+const chatContentProps = {
+  thinking: {
+    collapsed: true
+  }
+}
 
 // tdesign-chat 的 useChat 配置放在这里，右侧聊天室完整掌握发送、SSE 和完成刷新流程。
 const chatServiceConfig: ChatServiceConfig = {
@@ -241,7 +240,6 @@ watch(
  * @param params
  */
 function chatOnRequest (params: ChatRequestParams) {
-  console.log('chatOnRequest', params)
   const requestConfig: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
@@ -251,7 +249,8 @@ function chatOnRequest (params: ChatRequestParams) {
     requestConfig.body = JSON.stringify({
       message: params.prompt,
       sessionId: currentSessionId.value || undefined,
-      enableWebSearch: enableWebSearch.value
+      enableWebSearch: enableWebSearch.value,
+      enableThinking: enableThinking.value
     })
   }
   return requestConfig;
@@ -578,47 +577,6 @@ function getMessageToolRecordId(message: ChatMessagesData) {
 }
 
 /**
- * 获取消息中的Markdown文本。
- * @param message 聊天消息
- * @returns Markdown文本
- */
-function getMessageMarkdown(message: ChatMessagesData) {
-  const content = message.content?.find(item => item.type === 'markdown' || item.type === 'text')
-  return typeof content?.data === 'string' ? content.data : ''
-}
-
-/**
- * 获取消息中的思考过程。
- * @param message 聊天消息
- * @returns 思考过程内容
- */
-function getMessageThinking(message: ChatMessagesData): DisplayThinkingContent | undefined {
-  const content = message.content?.find(item => item.type === 'thinking')
-  if (!content?.data || typeof content.data !== 'object') {
-    return undefined
-  }
-  return content.data as DisplayThinkingContent
-}
-
-/**
- * 获取思考过程是否折叠。
- * @param message 聊天消息
- * @returns 是否折叠
- */
-function getThinkingCollapsed(message: ChatMessagesData) {
-  return thinkingCollapsedMap.value[String(message.id)] ?? true
-}
-
-/**
- * 记录思考过程折叠状态。
- * @param message 聊天消息
- * @param event 折叠状态变更事件
- */
-function handleThinkingCollapsedChange(message: ChatMessagesData, event: CustomEvent<boolean>) {
-  thinkingCollapsedMap.value[String(message.id)] = event.detail
-}
-
-/**
  * 获取消息气泡方向。
  * @param message 聊天消息
  * @returns 气泡方向
@@ -780,33 +738,11 @@ function sleep(delayMs: number) {
   align-items: stretch;
 }
 
-.assistant-message-content {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.assistant-message-content :deep(.t-chat__markdown) {
-  margin-bottom: 0;
-}
-
-.assistant-message-content :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
 .tool-call-trigger-row {
   display: flex;
   align-items: center;
   margin: 0;
   padding-left: 0;
-}
-
-.tool-call-trigger {
-  height: 28px;
-  color: #334155;
-  background: #fff;
-  border-color: #e2e8f0;
-  box-shadow: none;
 }
 
 .chat-progress-queue {
@@ -825,25 +761,25 @@ function sleep(delayMs: number) {
   margin: 0 auto;
 }
 
-.web-search-toggle {
+.sender-option-list {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.sender-option-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
-.web-search-status {
+.sender-option-status {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 18px;
   white-space: nowrap;
-}
-
-.web-search-status.active {
-  color: #366ef4;
 }
 
 .welcome-panel {
@@ -911,12 +847,12 @@ function sleep(delayMs: number) {
     padding: 10px 12px 12px;
   }
 
-  .web-search-toggle {
-    gap: 6px;
+  .sender-option-list {
+    gap: 8px;
   }
 
-  .web-search-status {
-    font-size: 11px;
+  .sender-option-toggle {
+    gap: 6px;
   }
 
   .welcome-panel {
