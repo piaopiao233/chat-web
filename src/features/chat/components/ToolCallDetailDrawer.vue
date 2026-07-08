@@ -89,6 +89,9 @@
 import { computed, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { InternetIcon, ToolsIcon } from 'tdesign-icons-vue-next'
+import attempt from 'lodash-es/attempt'
+import compact from 'lodash-es/compact'
+import isError from 'lodash-es/isError'
 import isPlainObject from 'lodash-es/isPlainObject'
 import { getToolCallsByRecordId } from '../../../api/chat'
 import type { ToolCallMeta } from '../../../api/chat'
@@ -173,7 +176,10 @@ function buildWebSearchGroups(tools: ToolCallMeta[]) {
   tools
     .filter(tool => tool.name === WEB_SEARCH_TOOL_NAME)
     .forEach((tool) => {
-      const query = (JSON.parse(tool.arguments || '{}') as { query: string }).query
+      const args = parseJson<{ query?: unknown }>(tool.arguments, {})
+      const query = typeof args.query === 'string' && args.query.trim()
+        ? args.query
+        : '未知搜索词'
       const existsGroup = groupMap.get(query)
       const group = existsGroup || { query, results: [] }
 
@@ -194,14 +200,12 @@ function parseWebSearchResults(value: string | null) {
     return []
   }
 
-  const parsed = JSON.parse(value) as unknown
+  const parsed = parseJson<unknown>(value, [])
   if (!Array.isArray(parsed)) {
     return []
   }
 
-  return parsed
-    .map(item => normalizeWebSearchResult(item))
-    .filter((item): item is WebSearchResultItem => Boolean(item))
+  return compact(parsed.map(item => normalizeWebSearchResult(item)))
 }
 
 /**
@@ -225,6 +229,21 @@ function normalizeWebSearchResult(value: unknown) {
     message: record.message,
     code: record.code
   }
+}
+
+/**
+ * 安全解析JSON字符串。
+ * @param value JSON字符串
+ * @param fallback 解析失败时的兜底值
+ * @returns 解析结果或兜底值
+ */
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) {
+    return fallback
+  }
+
+  const parsed = attempt(JSON.parse, value) as unknown
+  return isError(parsed) ? fallback : parsed as T
 }
 </script>
 

@@ -15,6 +15,7 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
+import debounce from 'lodash-es/debounce'
 
 type ProgressQueueItem = {
   key: string
@@ -35,7 +36,7 @@ const props = withDefaults(
 const queue = ref<ProgressQueueItem[]>([])
 const currentItem = ref<ProgressQueueItem>()
 const loadingVisible = ref(false)
-let itemTimer: ReturnType<typeof window.setTimeout> | undefined
+const scheduleNextItem = debounce(showNextItem, props.intervalMs)
 
 defineExpose({
   push,
@@ -46,14 +47,13 @@ defineExpose({
  * 组件卸载时清理定时器。
  */
 onBeforeUnmount(() => {
-  stopItemTimer()
+  scheduleNextItem.cancel()
 })
 
 /**
  * 显示队列中的下一条进度提示。
  */
 function showNextItem() {
-  stopItemTimer()
   const nextItem = queue.value.shift()
   if (!nextItem) {
     currentItem.value = undefined
@@ -61,9 +61,7 @@ function showNextItem() {
   }
 
   currentItem.value = nextItem
-  itemTimer = window.setTimeout(() => {
-    showNextItem()
-  }, props.intervalMs)
+  scheduleNextItem()
 }
 
 /**
@@ -87,19 +85,7 @@ function clear() {
   queue.value = []
   currentItem.value = undefined
   loadingVisible.value = false
-  stopItemTimer()
-}
-
-/**
- * 停止当前提示的定时器。
- */
-function stopItemTimer() {
-  if (!itemTimer) {
-    return
-  }
-
-  window.clearTimeout(itemTimer)
-  itemTimer = undefined
+  scheduleNextItem.cancel()
 }
 </script>
 

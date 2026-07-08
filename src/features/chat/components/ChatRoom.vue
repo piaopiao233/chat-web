@@ -108,8 +108,10 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { promiseTimeout } from '@vueuse/shared'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { InternetIcon, RobotFilledIcon, ToolsIcon } from 'tdesign-icons-vue-next'
+import compact from 'lodash-es/compact'
 import {
   type AIMessageContent,
   type ChatMessagesData,
@@ -443,7 +445,7 @@ async function setChatMessages(nextMessages: ChatMessagesData[]) {
 async function loadMessagesWhenReady(sessionId: string, minVisibleCount: number) {
   for (const delayMs of HISTORY_RELOAD_DELAYS) {
     if (delayMs > 0) {
-      await sleep(delayMs)
+      await promiseTimeout(delayMs)
     }
 
     const historyMessages = await getMessages(sessionId)
@@ -589,7 +591,7 @@ function collectRecordToolCalls(backendMessages: ChatMessage[]) {
  * @returns 工具调用列表
  */
 function getBackendToolCalls(message: ChatMessage): ToolCallMeta[] {
-  return message.metaJson?.toolCalls?.filter((toolCall): toolCall is ToolCallMeta => Boolean(toolCall)) || []
+  return compact<ToolCallMeta>(message.metaJson?.toolCalls || [])
 }
 
 /**
@@ -696,7 +698,7 @@ function formatToolSummary(toolCalls: DisplayToolCall[]) {
  * @param toolCalls 流式工具调用列表
  */
 function showStreamToolCalls(toolCalls?: Array<StreamToolCallMeta | null> | null) {
-  const nextToolCalls = toolCalls?.filter((toolCall): toolCall is StreamToolCallMeta => Boolean(toolCall)) || []
+  const nextToolCalls = compact<StreamToolCallMeta>(toolCalls || [])
   if (!nextToolCalls.length) {
     return
   }
@@ -736,13 +738,6 @@ function toProgressQueueItem(toolCall: StreamToolCallMeta | null): ProgressQueue
   }
 }
 
-/**
- * 延迟指定毫秒数。
- * @param delayMs 延迟时间
- */
-function sleep(delayMs: number) {
-  return new Promise(resolve => window.setTimeout(resolve, delayMs))
-}
 </script>
 
 <style scoped>
