@@ -30,7 +30,7 @@
             :variant="getMessageVariant(message)"
             :avatar="getMessageAvatar(message)"
             :name="getMessageName(message)"
-            :datetime="message.datetime"
+            :datetime="formatDateTime(message.datetime)"
             :chat-content-props="chatContentProps"
           >
             <!-- 工具入口放在操作区，正文继续交给 t-chat-message 默认 Markdown 渲染。 -->
@@ -74,19 +74,24 @@
         >
           <template #footer-prefix>
             <div class="sender-option-list">
-              <div class="sender-option-toggle">
-                <t-switch v-model="enableWebSearch" size="small" />
-                <span class="sender-option-status ">
-                  <internet-icon />
-                  {{ enableWebSearch ? '网络搜索已开启' : '网络搜索已关闭' }}
-                </span>
-              </div>
-              <div class="sender-option-toggle">
-                <t-switch v-model="enableThinking" size="small" />
-                <span class="sender-option-status">
-                  <robot-filled-icon />深度思考
-                </span>
-              </div>
+              <t-button
+                class="sender-option-button"
+                :class="{ 'is-active': enableWebSearch }"
+                variant="outline"
+                @click="enableWebSearch = !enableWebSearch"
+              >
+                <template #icon><internet-icon /></template>
+                <span>{{ enableWebSearch ? '网络搜索已开启' : '网络搜索已关闭' }}</span>
+              </t-button>
+              <t-button
+                class="sender-option-button"
+                :class="{ 'is-active': enableThinking }"
+                variant="outline"
+                @click="enableThinking = !enableThinking"
+              >
+                <template #icon><robot-filled-icon /></template>
+                <span>深度思考</span>
+              </t-button>
             </div>
           </template>
         </t-chat-sender>
@@ -117,6 +122,7 @@ import ProgressQueue from '../../../components/ProgressQueue.vue'
 import {getMessages, isSessionIdHasRunningChat, stopChatStream, chatUrl, retryChatUrl} from '../../../api/chat'
 import type { ChatMessage, CustomChatResponse, StreamToolCallMeta, ToolCallMeta } from '../../../api/chat'
 import ToolCallDetailDrawer from './ToolCallDetailDrawer.vue'
+import { formatDateTime } from '../../../utils/time'
 
 const HISTORY_RELOAD_DELAYS = [100, 500, 1000, 1500] as const
 
@@ -168,6 +174,8 @@ const enableThinking = ref(true)
 const skipNextSessionLoad = ref(false)
 // 当前正在流式生成的一轮对话ID
 const activeRecordId = ref('')
+// 当前流式回复是否正在输出思考过程
+let isStreamingThinking = false
 // 聊天列表的引用
 const chatListRef = ref<ChatListInstance>()
 // 工具提示组件
@@ -259,7 +267,7 @@ function chatOnRequest (params: ChatRequestParams) {
 /**
  * 解析后端返回的SSE数据。
  */
-function chatOnMessage(chunk: SSEChunkData): AIMessageContent | null {
+function chatOnMessage(chunk: SSEChunkData, message?: ChatMessagesData): AIMessageContent | null {
   const data = chunk.data as CustomChatResponse
 
   if (data?.sessionId && !currentSessionId.value) {
@@ -282,6 +290,7 @@ function chatOnMessage(chunk: SSEChunkData): AIMessageContent | null {
   }
 
   if (data.isThinking) {
+    isStreamingThinking = true
     return {
       type: 'thinking',
       data: { title: '思考中', text: data.content },
@@ -290,11 +299,45 @@ function chatOnMessage(chunk: SSEChunkData): AIMessageContent | null {
     }
   }
 
+  completeStreamingThinking(message)
   return {
     type: 'markdown',
     data: data.content,
     strategy: 'merge'
   }
+}
+
+/**
+ * 正文开始流式输出时，结束当前消息里仍在进行中的思考过程。
+ */
+function completeStreamingThinking(message?: ChatMessagesData) {
+  if (!isStreamingThinking || !message?.id) {
+    return
+  }
+
+  const messageContent = message?.content as AIMessageContent[] | undefined
+  const thinkingIndex = messageContent?.findIndex((content) => (
+    content.type === 'thinking' && content.status === 'streaming'
+  )) ?? -1
+
+  if (!messageContent || thinkingIndex < 0) {
+    return
+  }
+
+  const thinkingContent = messageContent[thinkingIndex]
+  if (thinkingContent.type !== 'thinking') {
+    return
+  }
+
+  chatEngine.value?.messageStore.appendContent(message.id, {
+    ...thinkingContent,
+    data: {
+      title: '已完成思考',
+      text: thinkingContent.data.text
+    },
+    status: 'complete'
+  }, thinkingIndex)
+  isStreamingThinking = false
 }
 
 /**
@@ -367,6 +410,7 @@ function setChatListRef(instance: ChatListInstance | null) {
 function resetRoomState() {
   inputValue.value = ''
   activeRecordId.value = ''
+  isStreamingThinking = false
   clearStreamToolCalls()
   closeToolCallDrawer()
 }
@@ -768,18 +812,23 @@ function sleep(delayMs: number) {
   gap: 12px;
 }
 
-.sender-option-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+.sender-option-button {
+  height: var(--td-comp-size-m);
+  border-radius: 32px;
+  box-sizing: border-box;
+  white-space: nowrap;
 }
 
-.sender-option-status {
+.sender-option-button.is-active {
+  color: var(--td-text-color-brand);
+  background: var(--td-brand-color-light);
+  border-color: var(--td-brand-color-focus);
+}
+
+.sender-option-button :deep(.t-button__text) {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  white-space: nowrap;
+  gap: var(--td-comp-margin-s);
 }
 
 .welcome-panel {
@@ -849,10 +898,6 @@ function sleep(delayMs: number) {
 
   .sender-option-list {
     gap: 8px;
-  }
-
-  .sender-option-toggle {
-    gap: 6px;
   }
 
   .welcome-panel {
